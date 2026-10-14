@@ -1,0 +1,17 @@
+name: dio_auth_kit_example
+description: A retrofit client using dio_auth_kit annotations.
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  dio: ^5.7.0
+  dio_auth_kit:
+    path: ../
+  retrofit: ^4.4.0
+
+dev_dependencies:
+  build_runner: ^2.4.0
+  retrofit_generator: ^10.0.0
+  test: ^1.25.0
