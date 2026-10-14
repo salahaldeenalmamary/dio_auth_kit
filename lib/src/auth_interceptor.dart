@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 
+import 'auth_error_policy.dart';
 import 'auth_errors.dart';
 import 'auth_event.dart';
 import 'auth_extra.dart';
@@ -19,20 +20,6 @@ typedef TokenRefresher = Future<TokenPair> Function(
   Dio refreshDio,
   TokenPair current,
 );
-
-/// Whether a failed request should trigger a refresh and retry.
-bool defaultShouldRefresh(DioException error) =>
-    error.response?.statusCode == 401;
-
-/// Whether a refresh error means the session is gone (clear and sign out)
-/// rather than a transient failure (keep the tokens, fail this request).
-///
-/// Connection errors, timeouts and 5xx responses keep the session.
-bool defaultIsSessionRejection(Object error) {
-  if (error is! DioException) return true;
-  final status = error.response?.statusCode;
-  return status == 400 || status == 401 || status == 403;
-}
 
 /// Attaches the access token and refreshes it on 401, one refresh at a time.
 ///
@@ -60,6 +47,10 @@ bool defaultIsSessionRejection(Object error) {
 ///    `@SkipRefresh`, `@AllowRefresh`, or `AuthExtra.options` on plain dio;
 /// 2. the client: `@RestApi(headers: AuthScope.none)` or `AuthScope.dio`;
 /// 3. this interceptor: [defaultMode] and [defaultSkipRefresh].
+///
+/// What a failed response triggers (refresh, end the session or pass
+/// through) resolves the same way: `@RefreshOn`/`@ExpireOn`/`@PassThroughOn`,
+/// then the client's `AuthScope` status headers, then [errorPolicy].
 class AuthInterceptor extends Interceptor {
   AuthInterceptor({
     required this.dio,
@@ -67,9 +58,7 @@ class AuthInterceptor extends Interceptor {
     required this.refresh,
     Dio? refreshDio,
     this.headerBuilder = bearerHeader,
-    this.shouldRefresh = defaultShouldRefresh,
-    this.isSessionRejection = defaultIsSessionRejection,
-    this.isSessionInvalid,
+    this.errorPolicy = const AuthErrorPolicy(),
     this.proactiveLeeway = const Duration(seconds: 30),
     this.defaultMode = AuthMode.required,
     this.defaultSkipRefresh = false,
@@ -82,12 +71,9 @@ class AuthInterceptor extends Interceptor {
   final TokenStorage storage;
   final TokenRefresher refresh;
   final AuthHeaderBuilder headerBuilder;
-  final bool Function(DioException error) shouldRefresh;
-  final bool Function(Object refreshError) isSessionRejection;
 
-  /// Ends the session without refreshing, such as when the server reports a
-  /// deleted or blocked user.
-  final bool Function(DioException error)? isSessionInvalid;
+  /// Global rules for failed responses and failed refresh calls.
+  final AuthErrorPolicy errorPolicy;
 
   /// Refresh before sending when the token expires within this window;
   /// `null` refreshes only after a 401.
@@ -114,11 +100,7 @@ class AuthInterceptor extends Interceptor {
       (Dio(
         dio.options.copyWith(
           headers: Map.of(dio.options.headers)
-            ..removeWhere(
-              (key, _) =>
-                  key.toLowerCase() == AuthScope.modeHeader ||
-                  key.toLowerCase() == AuthScope.skipRefreshHeader,
-            ),
+            ..removeWhere((key, _) => AuthScope.isMarker(key)),
         ),
       )..httpClientAdapter = dio.httpClientAdapter);
 
@@ -172,19 +154,21 @@ class AuthInterceptor extends Interceptor {
   ) async {
     final options = err.requestOptions;
     final sent = options.extra[AuthExtra.sentToken];
-    if (sent is! String || _modeOf(options) != AuthMode.required) {
-      return handler.next(err);
-    }
+    final mode = _modeOf(options);
+    if (sent is! String || mode == AuthMode.none) return handler.next(err);
 
-    if (isSessionInvalid?.call(err) ?? false) {
-      await _expire(sent);
-      return handler.next(err);
-    }
-
-    if (!shouldRefresh(err) ||
-        _skipsRefresh(options) ||
-        options.extra[AuthExtra.retried] == true) {
-      return handler.next(err);
+    switch (_actionFor(err)) {
+      case AuthErrorAction.expireSession:
+        // Any request that carried the token, optional ones included.
+        await _expire(sent);
+        return handler.next(err);
+      case AuthErrorAction.refresh
+          when mode == AuthMode.required &&
+              !_skipsRefresh(options) &&
+              options.extra[AuthExtra.retried] != true:
+        break;
+      default:
+        return handler.next(err);
     }
 
     final TokenPair fresh;
@@ -213,6 +197,13 @@ class AuthInterceptor extends Interceptor {
 
   AuthMode _modeOf(RequestOptions options) =>
       AuthExtra.modeOf(options) ?? defaultMode;
+
+  AuthErrorAction? _actionFor(DioException err) {
+    final status = err.response?.statusCode;
+    if (status == null) return null;
+    return AuthExtra.statusActionOf(err.requestOptions, status) ??
+        errorPolicy.actionFor(err);
+  }
 
   bool _skipsRefresh(RequestOptions options) =>
       AuthExtra.skipsRefresh(options, fallback: defaultSkipRefresh);
@@ -252,16 +243,20 @@ class AuthInterceptor extends Interceptor {
           return next;
         } catch (error, stackTrace) {
           _emit(RefreshFailed(error, stackTrace));
-          if (isSessionRejection(error)) await _expire(current.accessToken);
+          if (errorPolicy.endsSession(error)) {
+            await _expire(current.accessToken);
+          }
           rethrow;
         }
       });
 
   /// Clears the session once per access token, however many requests fail
-  /// with it.
+  /// with it, unless the token was already replaced by a refresh.
   Future<void> _expire(String accessToken) async {
     if (_expiredToken == accessToken) return;
     _expiredToken = accessToken;
+    final stored = await storage.read();
+    if (stored == null || stored.accessToken != accessToken) return;
     await storage.clear();
     _emit(const SessionExpired());
     await onSessionExpired?.call();

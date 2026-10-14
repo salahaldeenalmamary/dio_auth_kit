@@ -26,4 +26,14 @@ abstract class ApiClient {
   @SkipRefresh()
   @POST('/auth/logout')
   Future<void> logout();
+
+  /// This backend also signals an expired token with 419.
+  @RefreshOn([401, 419])
+  @GET('/orders')
+  Future<dynamic> orders();
+
+  /// A 401 here means "wrong current password", not an expired token.
+  @PassThroughOn([401])
+  @POST('/password')
+  Future<void> changePassword(@Body() Map<String, dynamic> body);
 }

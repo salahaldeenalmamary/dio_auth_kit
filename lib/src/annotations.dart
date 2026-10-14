@@ -42,3 +42,36 @@ class SkipRefresh extends Extra {
 class AllowRefresh extends Extra {
   const AllowRefresh() : super(const {AuthExtra.skipRefresh: false});
 }
+
+// Status-based rules take constructor arguments, which an `Extra` const map
+// cannot hold, so they use retrofit's `TypedExtras` (retrofit >= 4.4). Its
+// generator writes each field under the field's name, which is why the fields
+// carry the `AuthExtra.refreshOn`/`expireOn`/`passThroughOn` key names.
+
+/// Refresh and retry when the response has one of these statuses.
+///
+/// ```dart
+/// @RefreshOn([401, 419])
+/// @GET('/orders')
+/// Future<List<Order>> orders();
+/// ```
+class RefreshOn extends TypedExtras {
+  const RefreshOn(this.authKitRefreshOn);
+
+  final List<int> authKitRefreshOn;
+}
+
+/// End the session, without refreshing, on these statuses.
+class ExpireOn extends TypedExtras {
+  const ExpireOn(this.authKitExpireOn);
+
+  final List<int> authKitExpireOn;
+}
+
+/// Return these statuses to the caller untouched, such as a 401 that means
+/// "wrong current password" rather than "token expired".
+class PassThroughOn extends TypedExtras {
+  const PassThroughOn(this.authKitPassThroughOn);
+
+  final List<int> authKitPassThroughOn;
+}

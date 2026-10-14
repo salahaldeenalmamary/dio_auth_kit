@@ -4,8 +4,9 @@ import 'package:retrofit/retrofit.dart';
 
 part 'public_api.g.dart';
 
-/// Every method is public unless it says otherwise.
-@RestApi(headers: AuthScope.none)
+/// Every method is public unless it says otherwise, and a 403 on an
+/// authenticated method ends the session.
+@RestApi(headers: {...AuthScope.none, AuthScope.expireOnHeader: '403'})
 abstract class PublicApi {
   factory PublicApi(Dio dio, {String? baseUrl}) = _PublicApi;
 

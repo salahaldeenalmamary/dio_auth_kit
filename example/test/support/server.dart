@@ -3,8 +3,12 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
-/// Records requests; answers 401 for logout and 200 otherwise.
+/// Records requests. Paths in [failures] answer that status unless the
+/// request carries the refreshed token `a2`; everything else answers 200.
 class FakeServer implements HttpClientAdapter {
+  FakeServer([this.failures = const {'/auth/logout': 401}]);
+
+  final Map<String, int> failures;
   final requests = <RequestOptions>[];
 
   @override
@@ -15,7 +19,9 @@ class FakeServer implements HttpClientAdapter {
   ) async {
     requests.add(options);
     if (requestStream != null) await requestStream.drain<void>();
-    final status = options.path == '/auth/logout' ? 401 : 200;
+    final failure = failures[options.path];
+    final refreshed = options.headers['Authorization'] == 'Bearer a2';
+    final status = failure != null && !refreshed ? failure : 200;
     return ResponseBody.fromString(
       jsonEncode({'ok': true}),
       status,

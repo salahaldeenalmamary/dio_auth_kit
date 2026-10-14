@@ -11,6 +11,9 @@ Bearer and JWT authentication for [dio](https://pub.dev/packages/dio) and
   `@SkipRefresh`, `@AllowRefresh`), per client (`@RestApi(headers:
   AuthScope.none)`) or for the whole dio. These work with the
   `retrofit_generator` you already use; there's no extra code generator.
+- Decides from the backend's error (status, body, `WWW-Authenticate` header)
+  whether to refresh, end the session or pass the error through, per method,
+  per client or globally.
 - Ends the session cleanly: clears storage and calls `onSessionExpired` once.
   A network error during refresh doesn't sign the user out.
 
@@ -153,6 +156,77 @@ Set the global scope on the interceptor, not in `BaseOptions.extra`. dio
 merges `BaseOptions.extra` into every request's method-level extras, so a
 value set there would override the client scope.
 
+## Error rules
+
+Each failed response leads to one action:
+
+| Action | Effect |
+| --- | --- |
+| `refresh` | Refresh the tokens once, then retry the request (required mode only). |
+| `expireSession` | Clear storage, emit `SessionExpired`, call `onSessionExpired`. No refresh. |
+| `passThrough` | Return the error to the caller and leave the session alone. |
+
+The default is to refresh on 401 and pass everything else through. Like the
+other settings, the action resolves from the most specific scope:
+
+| Scope | How | Matches on |
+| --- | --- | --- |
+| 1. Method | `@RefreshOn([401, 419])`, `@ExpireOn([403])`, `@PassThroughOn([401])`; plain dio: `AuthExtra.options(refreshOn: {401, 419})` | status |
+| 2. Client | `@RestApi(headers: {AuthScope.refreshOnHeader: '401,419', AuthScope.expireOnHeader: '403'})`, or `AuthScope.dio(dio, refreshOn: {401, 419})` | status |
+| 3. Global | `AuthInterceptor(errorPolicy: AuthErrorPolicy(rules: [...]))` | status, body, headers, any predicate |
+
+Within the method or client level, pass-through beats expire, and expire
+beats refresh. A status that no level names is passed through.
+
+Annotations can only hold constants, so the method and client levels match on
+status codes. Body and header matching lives in the global policy, where the
+first matching rule wins:
+
+```dart
+AuthInterceptor(
+  ...,
+  errorPolicy: AuthErrorPolicy(
+    rules: [
+      // ProblemDetails text, as in {"title": "...", "detail": "User not found"}
+      AuthErrorRule.expireOn({401, 404}, bodyContains: 'user not found'),
+      // A JSON code, with dot paths into nested objects
+      AuthErrorRule.expireOn({403}, bodyFields: {'error.code': 'ACCOUNT_BLOCKED'}),
+      // RFC 6750: only refresh when the server says the token is invalid
+      AuthErrorRule.refreshOn(
+        {401},
+        headerContains: {'www-authenticate': 'invalid_token'},
+      ),
+      // This backend also uses 419 for an expired token
+      AuthErrorRule.refreshOn({419}),
+      // Anything else
+      AuthErrorRule(
+        AuthErrorAction.passThrough,
+        when: (e) => e.requestOptions.path.startsWith('/legacy/'),
+      ),
+    ],
+    // What a failed refresh call means; anything unmatched keeps the session.
+    refreshFailure: [AuthErrorRule.expireOn({400, 401, 403})],
+  ),
+);
+```
+
+Rule conditions:
+
+| Condition | Meaning |
+| --- | --- |
+| `statuses` | The status is in the set. `null` means any status. |
+| `bodyFields` | JSON body fields equal these values. Keys may be dot paths, and a missing key never equals `null`. |
+| `bodyContains` | The body text contains this. A `String` matches case-insensitively; a `RegExp` is applied as given. JSON and byte bodies are read as text. |
+| `headerContains` | These response headers contain this text. |
+| `when` | Any other check on the `DioException`. |
+
+Every condition given must hold. Errors without a response, such as offline or
+a timeout, never match. Only error responses are checked, not 2xx bodies.
+
+An `expireSession` rule also applies to `@OptionalAuth` requests that sent a
+token. It doesn't end a session whose token was already refreshed while the
+request was in flight.
+
 ## Secure storage on Flutter
 
 The package doesn't ship a Flutter store. Implement `TokenStorage` over
@@ -192,9 +266,7 @@ class SecureTokenStorage implements TokenStorage {
 | Parameter | Default | Purpose |
 | --- | --- | --- |
 | `headerBuilder` | `bearerHeader` | Build the auth headers from a `TokenPair`. |
-| `shouldRefresh` | status 401 | Which errors trigger refresh and retry. |
-| `isSessionRejection` | refresh 400/401/403 or a non-dio error | Which refresh errors end the session. Others, such as offline or 5xx, keep it. |
-| `isSessionInvalid` | none | End the session without refreshing, such as a blocked or deleted user. |
+| `errorPolicy` | refresh on 401; a refresh failing with 400/401/403 ends the session | Global [error rules](#error-rules) for failed requests and failed refresh calls. |
 | `proactiveLeeway` | 30 s | Refresh before sending when the token expires within this window. `null` disables it. |
 | `defaultMode` | `required` | Mode when neither the method nor the client sets one. |
 | `defaultSkipRefresh` | `false` | Skip refresh when neither the method nor the client says. |
@@ -210,9 +282,9 @@ class SecureTokenStorage implements TokenStorage {
 | `tokenStoreProvider` (sync) | `TokenStorage.read()` (async) |
 | `onRefresh(dio, store)` | `refresh(refreshDio, current)` |
 | `authHeader` | `headerBuilder` |
-| `shouldRefresh(response)` | `shouldRefresh(DioException)` |
+| `shouldRefresh(response)` | `AuthErrorRule.refreshOn({...})` in `errorPolicy` |
 | `onFailed` | `onSessionExpired` + `events` |
-| "user not found → logout" checks | `isSessionInvalid` |
+| "user not found → logout" checks | `AuthErrorRule.expireOn({...}, bodyContains: 'user not found')` |
 | `retryInterceptors` | not needed: retries go through the same `dio` |
 
 Behaviour that changes: a 401 now refreshes even when the local JWT hasn't

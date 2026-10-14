@@ -16,7 +16,7 @@ class _Harness {
     TokenRefresher? refresh,
     Duration? proactiveLeeway = const Duration(seconds: 30),
     AuthMode defaultMode = AuthMode.required,
-    bool Function(DioException)? isSessionInvalid,
+    AuthErrorPolicy errorPolicy = const AuthErrorPolicy(),
   }) : storage = InMemoryTokenStorage(stored) {
     server = FakeServer(route ?? FakeServer.acceptTokens({'a2'}));
     dio = Dio(BaseOptions(baseUrl: 'https://api.test'))
@@ -27,7 +27,7 @@ class _Harness {
       refresh: refresh ?? _countingRefresh,
       proactiveLeeway: proactiveLeeway,
       defaultMode: defaultMode,
-      isSessionInvalid: isSessionInvalid,
+      errorPolicy: errorPolicy,
       onSessionExpired: () => sessionExpired++,
     );
     interceptor.events.listen(events.add);
@@ -233,11 +233,17 @@ void main() {
     expect(await h.storage.read(), isNull);
   });
 
-  test('isSessionInvalid ends the session without refreshing', () async {
+  test('a predicate rule ends the session without refreshing', () async {
     final h = _Harness(
       route: (_) => json(403, {'code': 'user_blocked'}),
-      isSessionInvalid: (e) =>
-          (e.response?.data as Map?)?['code'] == 'user_blocked',
+      errorPolicy: AuthErrorPolicy(
+        rules: [
+          AuthErrorRule(
+            AuthErrorAction.expireSession,
+            when: (e) => (e.response?.data as Map?)?['code'] == 'user_blocked',
+          ),
+        ],
+      ),
     );
 
     await expectLater(h.dio.get<dynamic>('/me'), throwsA(isA<DioException>()));
@@ -350,5 +356,160 @@ void main() {
     expect(refreshRequest.headers['Authorization'], isNull);
     expect(h.interceptor.refreshDio.interceptors.whereType<AuthInterceptor>(),
         isEmpty);
+  });
+
+  group('error policy', () {
+    test('a body rule ends the session on 403 without refreshing', () async {
+      final h = _Harness(
+        route: (_) =>
+            json(403, {'title': 'Forbidden', 'detail': 'User not found'}),
+        errorPolicy: const AuthErrorPolicy(
+          rules: [
+            AuthErrorRule.expireOn({401, 403}, bodyContains: 'user not found'),
+            AuthErrorRule.refreshOn({401}),
+          ],
+        ),
+      );
+
+      await expectLater(
+          h.dio.get<dynamic>('/me'), throwsA(isA<DioException>()));
+      expect(h.refreshCalls, 0);
+      expect(h.sessionExpired, 1);
+      expect(await h.storage.read(), isNull);
+    });
+
+    test('a custom status triggers refresh', () async {
+      final h = _Harness(
+        route: (options) => options.headers['Authorization'] == 'Bearer a2'
+            ? json(200, {})
+            : json(419, {}),
+        errorPolicy: const AuthErrorPolicy(
+          rules: [
+            AuthErrorRule.refreshOn({401, 419})
+          ],
+        ),
+      );
+
+      final res = await h.dio.get<dynamic>('/me');
+      expect(res.statusCode, 200);
+      expect(h.refreshCalls, 1);
+    });
+
+    test('WWW-Authenticate decides whether a 401 refreshes', () async {
+      const policy = AuthErrorPolicy(
+        rules: [
+          AuthErrorRule.refreshOn(
+            {401},
+            headerContains: {'WWW-Authenticate': 'invalid_token'},
+          ),
+        ],
+      );
+      final expired = _Harness(
+        errorPolicy: policy,
+        route: (options) => options.headers['Authorization'] == 'Bearer a2'
+            ? json(200, {})
+            : json(
+                401,
+                {},
+                headers: {'www-authenticate': 'Bearer error="invalid_token"'},
+              ),
+      );
+      expect((await expired.dio.get<dynamic>('/me')).statusCode, 200);
+      expect(expired.refreshCalls, 1);
+
+      final plain = _Harness(errorPolicy: policy);
+      await expectLater(
+        plain.dio.get<dynamic>('/me'),
+        throwsA(isA<DioException>()),
+      );
+      expect(plain.refreshCalls, 0);
+      expect(plain.sessionExpired, 0);
+    });
+
+    test('no matching rule passes the error through', () async {
+      final h = _Harness(errorPolicy: const AuthErrorPolicy(rules: []));
+
+      await expectLater(
+          h.dio.get<dynamic>('/me'), throwsA(isA<DioException>()));
+      expect(h.refreshCalls, 0);
+      expect(await h.storage.read(), _stale);
+    });
+
+    test('an expire rule applies to optional requests that sent a token',
+        () async {
+      final h = _Harness(
+        route: (_) => json(403, {}),
+        errorPolicy: const AuthErrorPolicy(
+          rules: [
+            AuthErrorRule.expireOn({403})
+          ],
+        ),
+      );
+
+      await expectLater(
+        h.dio.get<dynamic>(
+          '/catalog',
+          options: AuthExtra.options(mode: AuthMode.optional),
+        ),
+        throwsA(isA<DioException>()),
+      );
+      expect(h.sessionExpired, 1);
+    });
+
+    test('an expire rule on the retried request ends the session', () async {
+      final h = _Harness(
+        route: (options) => options.headers['Authorization'] == 'Bearer a2'
+            ? json(403, {'code': 'blocked'})
+            : json(401, {}),
+        errorPolicy: const AuthErrorPolicy(
+          rules: [
+            AuthErrorRule.refreshOn({401}),
+            AuthErrorRule.expireOn({403}, bodyFields: {'code': 'blocked'}),
+          ],
+        ),
+      );
+
+      await expectLater(
+          h.dio.get<dynamic>('/me'), throwsA(isA<DioException>()));
+      expect(h.refreshCalls, 1);
+      expect(h.sessionExpired, 1);
+      expect(await h.storage.read(), isNull);
+    });
+
+    test('an old token does not end a session renewed meanwhile', () async {
+      late _Harness h;
+      h = _Harness(
+        route: (_) async {
+          await h.storage.write(_fresh);
+          return json(403, {});
+        },
+        errorPolicy: const AuthErrorPolicy(
+          rules: [
+            AuthErrorRule.expireOn({403})
+          ],
+        ),
+      );
+
+      await expectLater(
+          h.dio.get<dynamic>('/me'), throwsA(isA<DioException>()));
+      expect(h.sessionExpired, 0);
+      expect(await h.storage.read(), _fresh);
+    });
+
+    test('refreshFailure rules decide whether a failed refresh ends it',
+        () async {
+      final h = _Harness(
+        refresh: (_, __) async => throw httpError(500),
+        errorPolicy: const AuthErrorPolicy(
+          refreshFailure: [
+            AuthErrorRule.expireOn({500})
+          ],
+        ),
+      );
+
+      await expectLater(
+          h.dio.get<dynamic>('/me'), throwsA(isA<DioException>()));
+      expect(h.sessionExpired, 1);
+    });
   });
 }

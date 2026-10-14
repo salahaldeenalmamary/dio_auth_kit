@@ -24,7 +24,10 @@ class _PublicApi implements PublicApi {
   Future<dynamic> news() async {
     final _extra = <String, dynamic>{};
     final queryParameters = <String, dynamic>{};
-    final _headers = <String, dynamic>{r'x-dio-auth-kit-mode': 'none'};
+    final _headers = <String, dynamic>{
+      r'x-dio-auth-kit-mode': 'none',
+      r'x-dio-auth-kit-expire-on': '403',
+    };
     _headers.removeWhere((k, v) => v == null);
     const Map<String, dynamic>? _data = null;
     final _options = _setStreamType<dynamic>(
@@ -46,7 +49,10 @@ class _PublicApi implements PublicApi {
   Future<dynamic> savedNews() async {
     final _extra = <String, dynamic>{'dio_auth_kit.mode': 'required'};
     final queryParameters = <String, dynamic>{};
-    final _headers = <String, dynamic>{r'x-dio-auth-kit-mode': 'none'};
+    final _headers = <String, dynamic>{
+      r'x-dio-auth-kit-mode': 'none',
+      r'x-dio-auth-kit-expire-on': '403',
+    };
     _headers.removeWhere((k, v) => v == null);
     const Map<String, dynamic>? _data = null;
     final _options = _setStreamType<dynamic>(

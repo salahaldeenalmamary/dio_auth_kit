@@ -10,5 +10,10 @@
   `AuthScope.dio(dio, mode: ...)` on any retrofit version. The marker headers
   are removed before the request is sent.
 - Global scope: `AuthInterceptor(defaultMode:, defaultSkipRefresh:)`.
+- Error rules decide refresh, end of session or pass-through from the
+  backend's error: `@RefreshOn`, `@ExpireOn` and `@PassThroughOn` per method,
+  `AuthScope` status headers per client, and `AuthErrorPolicy` globally, which
+  matches on status, JSON body fields, body text, response headers or any
+  predicate.
 - `TokenStorage` interface with `InMemoryTokenStorage` and `CachedTokenStorage`.
 - `AuthEvent` stream: `TokenRefreshed`, `RefreshFailed`, `SessionExpired`.

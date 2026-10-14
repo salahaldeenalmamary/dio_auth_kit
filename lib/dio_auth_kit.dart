@@ -2,6 +2,7 @@
 library;
 
 export 'src/annotations.dart';
+export 'src/auth_error_policy.dart';
 export 'src/auth_errors.dart';
 export 'src/auth_event.dart';
 export 'src/auth_extra.dart';

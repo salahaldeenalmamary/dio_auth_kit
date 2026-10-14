@@ -39,11 +39,18 @@ class FakeServer implements HttpClientAdapter {
       };
 }
 
-ResponseBody json(int status, Object? body) => ResponseBody.fromString(
+ResponseBody json(
+  int status,
+  Object? body, {
+  Map<String, String> headers = const {},
+}) =>
+    ResponseBody.fromString(
       jsonEncode(body),
       status,
       headers: {
         Headers.contentTypeHeader: [Headers.jsonContentType],
+        for (final MapEntry(:key, :value) in headers.entries)
+          key.toLowerCase(): [value],
       },
     );
 

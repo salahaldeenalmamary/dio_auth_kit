@@ -186,4 +186,68 @@ void main() {
       expect(s.server.requests, everyElement(_noMarkers()));
     });
   });
+
+  group('status rules', () {
+    test('a method passThroughOn beats the global refresh', () async {
+      final s = _Setup();
+      await expectLater(
+        s.get('/password', extra: AuthExtra.extras(passThroughOn: {401})),
+        throwsA(isA<DioException>()),
+      );
+      expect(s.refreshCalls, 0);
+      expect(await s.storage.read(), _stale);
+    });
+
+    test('a client refreshOn header applies and is stripped', () async {
+      final s = _Setup(
+        route: (options) => options.headers['Authorization'] == 'Bearer a2'
+            ? json(200, {})
+            : json(419, {}),
+      );
+      final res = await s.get(
+        '/me',
+        scope: {AuthScope.refreshOnHeader: '401, 419'},
+      );
+
+      expect(res.statusCode, 200);
+      expect(s.refreshCalls, 1);
+      expect(s.server.requests, everyElement(_noMarkers()));
+    });
+
+    test('a method set beats a client set', () async {
+      final s = _Setup();
+      final res = await s.get(
+        '/me',
+        scope: {AuthScope.expireOnHeader: '401'},
+        extra: AuthExtra.extras(refreshOn: {401}),
+      );
+
+      expect(res.statusCode, 200);
+      expect(s.refreshCalls, 1);
+    });
+
+    test('pass-through wins over expire within one level', () async {
+      final s = _Setup();
+      await expectLater(
+        s.get(
+          '/me',
+          extra: AuthExtra.extras(expireOn: {401}, passThroughOn: {401}),
+        ),
+        throwsA(isA<DioException>()),
+      );
+      expect(await s.storage.read(), _stale);
+    });
+
+    test('AuthScope.dio carries status rules', () async {
+      final s = _Setup(route: (_) => json(403, {}));
+      final scoped = AuthScope.dio(s.dio, expireOn: {403});
+
+      await expectLater(
+        scoped.get<dynamic>('/me'),
+        throwsA(isA<DioException>()),
+      );
+      expect(await s.storage.read(), isNull);
+      expect(s.server.requests, everyElement(_noMarkers()));
+    });
+  });
 }

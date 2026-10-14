@@ -1,5 +1,7 @@
 import 'package:dio/dio.dart';
 
+import 'auth_error_policy.dart';
+
 /// How a request uses the session.
 enum AuthMode {
   /// Attach the token, refresh on 401, and fail fast without a session.
@@ -26,6 +28,18 @@ abstract final class AuthExtra {
   /// Client-level refresh switch, absorbed from the `AuthScope` marker header.
   static const scopeSkipRefresh = 'dio_auth_kit.scopeSkipRefresh';
 
+  /// Method-level status sets, written by `@RefreshOn`, `@ExpireOn` and
+  /// `@PassThroughOn`. Retrofit's `TypedExtras` uses the annotation's field
+  /// name as the key, so these match those field names.
+  static const refreshOn = 'authKitRefreshOn';
+  static const expireOn = 'authKitExpireOn';
+  static const passThroughOn = 'authKitPassThroughOn';
+
+  /// Client-level status sets, absorbed from the `AuthScope` marker headers.
+  static const scopeRefreshOn = 'dio_auth_kit.scopeRefreshOn';
+  static const scopeExpireOn = 'dio_auth_kit.scopeExpireOn';
+  static const scopePassThroughOn = 'dio_auth_kit.scopePassThroughOn';
+
   /// Set on a retried request so a second 401 does not refresh again.
   static const retried = 'dio_auth_kit.retried';
 
@@ -46,6 +60,41 @@ abstract final class AuthExtra {
     return fallback;
   }
 
+  /// The action the method-level status sets name for [status], else the
+  /// client-level ones, else `null`. Within a level, pass-through wins over
+  /// expire, and expire over refresh.
+  static AuthErrorAction? statusActionOf(RequestOptions options, int status) {
+    for (final keys in const [
+      (passThroughOn, expireOn, refreshOn),
+      (scopePassThroughOn, scopeExpireOn, scopeRefreshOn),
+    ]) {
+      final extra = options.extra;
+      if (statusesOf(extra[keys.$1]).contains(status)) {
+        return AuthErrorAction.passThrough;
+      }
+      if (statusesOf(extra[keys.$2]).contains(status)) {
+        return AuthErrorAction.expireSession;
+      }
+      if (statusesOf(extra[keys.$3]).contains(status)) {
+        return AuthErrorAction.refresh;
+      }
+    }
+    return null;
+  }
+
+  /// Status codes from a list or set of ints, or a `'401, 419'` string.
+  static Set<int> statusesOf(Object? value) {
+    final Iterable<Object?> items = switch (value) {
+      Iterable<Object?>() => value,
+      String() => value.split(','),
+      _ => const [],
+    };
+    return {
+      for (final item in items)
+        if (item is int) item else int.tryParse('$item'.trim()),
+    }.whereType<int>().toSet();
+  }
+
   static AuthMode? _mode(Object? value) =>
       value is String ? AuthMode.values.asNameMap()[value] : null;
 
@@ -54,11 +103,36 @@ abstract final class AuthExtra {
   /// ```dart
   /// dio.post('/auth/login', options: AuthExtra.options(mode: AuthMode.none));
   /// ```
-  static Options options({AuthMode? mode, bool? skipRefresh}) =>
-      Options(extra: extras(mode: mode, skipRefresh: skipRefresh));
+  static Options options({
+    AuthMode? mode,
+    bool? skipRefresh,
+    Set<int>? refreshOn,
+    Set<int>? expireOn,
+    Set<int>? passThroughOn,
+  }) =>
+      Options(
+        extra: extras(
+          mode: mode,
+          skipRefresh: skipRefresh,
+          refreshOn: refreshOn,
+          expireOn: expireOn,
+          passThroughOn: passThroughOn,
+        ),
+      );
 
-  static Map<String, Object> extras({AuthMode? mode, bool? skipRefresh}) => {
+  static Map<String, Object> extras({
+    AuthMode? mode,
+    bool? skipRefresh,
+    Set<int>? refreshOn,
+    Set<int>? expireOn,
+    Set<int>? passThroughOn,
+  }) =>
+      {
         if (mode != null) AuthExtra.mode: mode.name,
         if (skipRefresh != null) AuthExtra.skipRefresh: skipRefresh,
+        if (refreshOn != null) AuthExtra.refreshOn: refreshOn.toList(),
+        if (expireOn != null) AuthExtra.expireOn: expireOn.toList(),
+        if (passThroughOn != null)
+          AuthExtra.passThroughOn: passThroughOn.toList(),
       };
 }
