@@ -7,9 +7,10 @@ Bearer and JWT authentication for [dio](https://pub.dev/packages/dio) and
 - Refreshes on 401 **once**, however many requests fail together, then
   retries them.
 - Optionally refreshes **before** sending when the JWT `exp` is close.
-- Marks endpoints `@NoAuth`, `@OptionalAuth`, `@Authenticated` or
-  `@SkipRefresh`. These annotations work with the `retrofit_generator` you
-  already use; there's no extra code generator.
+- Sets auth per method (`@NoAuth`, `@OptionalAuth`, `@Authenticated`,
+  `@SkipRefresh`, `@AllowRefresh`), per client (`@RestApi(headers:
+  AuthScope.none)`) or for the whole dio. These work with the
+  `retrofit_generator` you already use; there's no extra code generator.
 - Ends the session cleanly: clears storage and calls `onSessionExpired` once.
   A network error during refresh doesn't sign the user out.
 
@@ -81,16 +82,76 @@ abstract class ApiClient {
 | `@OptionalAuth()` | if present | no | sent without a token |
 | `@NoAuth()` | no | no | sent without a token |
 | `@SkipRefresh()` | yes | no | combine with a mode |
-
-`defaultMode` (default `AuthMode.required`) applies to methods with no
-annotation. If most of your API is public, set it to `AuthMode.optional` or
-`AuthMode.none` and annotate private endpoints with `@Authenticated()`.
+| `@AllowRefresh()` | yes | yes | re-enables refresh skipped by a wider scope |
 
 Plain dio calls use the same keys:
 
 ```dart
 dio.post('/auth/login', options: AuthExtra.options(mode: AuthMode.none));
 ```
+
+## Scopes
+
+Every setting resolves from the most specific scope that sets it:
+
+| Scope | Mode | Refresh on 401 |
+| --- | --- | --- |
+| 1. Method | `@NoAuth()`, `@OptionalAuth()`, `@Authenticated()` | `@SkipRefresh()`, `@AllowRefresh()` |
+| 2. Client | `@RestApi(headers: AuthScope.none)`, or `AuthScope.dio(dio, mode: ...)` | `AuthScope.skipRefresh`, `AuthScope.allowRefresh` |
+| 3. Global (the whole dio) | `AuthInterceptor(defaultMode: ...)` | `AuthInterceptor(defaultSkipRefresh: ...)` |
+
+### Client scope with `@RestApi`
+
+Needs retrofit >= 4.8 and retrofit_generator >= 10.1:
+
+```dart
+@RestApi(headers: AuthScope.none) // the whole client is public
+abstract class PublicApi {
+  factory PublicApi(Dio dio, {String? baseUrl}) = _PublicApi;
+
+  @GET('/news')
+  Future<List<News>> news(); // no token
+
+  @Authenticated() // the method wins over the client
+  @GET('/news/saved')
+  Future<List<News>> savedNews();
+}
+
+// Combine settings by spreading the constants:
+@RestApi(headers: {...AuthScope.optional, ...AuthScope.skipRefresh})
+abstract class CatalogApi { ... }
+```
+
+retrofit only accepts class-level settings as headers. The constants are
+marker headers (`x-dio-auth-kit-*`); `AuthInterceptor` reads them and removes
+them before the request is sent, so they never reach your server.
+
+### Client scope on older retrofit
+
+Give the client a scoped Dio. It shares the adapter, transformer and
+interceptors of the original Dio:
+
+```dart
+final publicApi = PublicApi(AuthScope.dio(dio, mode: AuthMode.none));
+```
+
+Create it after adding your interceptors; ones added to `dio` later aren't
+copied.
+
+### Global scope
+
+```dart
+AuthInterceptor(
+  dio: dio,
+  defaultMode: AuthMode.optional, // most of the API is public
+  defaultSkipRefresh: false,
+  ...
+);
+```
+
+Set the global scope on the interceptor, not in `BaseOptions.extra`. dio
+merges `BaseOptions.extra` into every request's method-level extras, so a
+value set there would override the client scope.
 
 ## Secure storage on Flutter
 
@@ -135,7 +196,8 @@ class SecureTokenStorage implements TokenStorage {
 | `isSessionRejection` | refresh 400/401/403 or a non-dio error | Which refresh errors end the session. Others, such as offline or 5xx, keep it. |
 | `isSessionInvalid` | none | End the session without refreshing, such as a blocked or deleted user. |
 | `proactiveLeeway` | 30 s | Refresh before sending when the token expires within this window. `null` disables it. |
-| `defaultMode` | `required` | Mode for unannotated requests. |
+| `defaultMode` | `required` | Mode when neither the method nor the client sets one. |
+| `defaultSkipRefresh` | `false` | Skip refresh when neither the method nor the client says. |
 | `refreshDio` | derived | Supply your own client for the refresh call. |
 
 `auth.events` is a broadcast stream of `TokenRefreshed`, `RefreshFailed` and

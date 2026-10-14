@@ -1,43 +1,17 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:dio/dio.dart';
 import 'package:dio_auth_kit/dio_auth_kit.dart';
 import 'package:dio_auth_kit_example/api_client.dart';
 import 'package:test/test.dart';
 
-class _Server implements HttpClientAdapter {
-  final requests = <RequestOptions>[];
-
-  @override
-  Future<ResponseBody> fetch(
-    RequestOptions options,
-    Stream<Uint8List>? requestStream,
-    Future<void>? cancelFuture,
-  ) async {
-    requests.add(options);
-    if (requestStream != null) await requestStream.drain<void>();
-    final status = options.path == '/auth/logout' ? 401 : 200;
-    return ResponseBody.fromString(
-      jsonEncode({'ok': true}),
-      status,
-      headers: {
-        Headers.contentTypeHeader: [Headers.jsonContentType],
-      },
-    );
-  }
-
-  @override
-  void close({bool force = false}) {}
-}
+import 'support/server.dart';
 
 void main() {
-  late _Server server;
+  late FakeServer server;
   late ApiClient api;
   var refreshCalls = 0;
 
   setUp(() {
-    server = _Server();
+    server = FakeServer();
     refreshCalls = 0;
     final dio = Dio(BaseOptions(baseUrl: 'https://api.test'))
       ..httpClientAdapter = server;

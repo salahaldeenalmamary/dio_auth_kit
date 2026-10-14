@@ -7,6 +7,7 @@ export 'src/auth_event.dart';
 export 'src/auth_extra.dart';
 export 'src/auth_header.dart';
 export 'src/auth_interceptor.dart';
+export 'src/auth_scope.dart';
 export 'src/jwt.dart';
 export 'src/refresh_coordinator.dart';
 export 'src/token_pair.dart';

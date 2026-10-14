@@ -6,6 +6,7 @@ import 'auth_errors.dart';
 import 'auth_event.dart';
 import 'auth_extra.dart';
 import 'auth_header.dart';
+import 'auth_scope.dart';
 import 'refresh_coordinator.dart';
 import 'token_pair.dart';
 import 'token_storage.dart';
@@ -54,9 +55,11 @@ bool defaultIsSessionRejection(Object error) {
 /// ));
 /// ```
 ///
-/// Per-endpoint behaviour comes from `RequestOptions.extra`, set with the
-/// `@NoAuth`, `@OptionalAuth`, `@Authenticated` and `@SkipRefresh` retrofit
-/// annotations or with `AuthExtra.options` for plain dio calls.
+/// Each setting resolves from the most specific scope:
+/// 1. the method: `@NoAuth`, `@OptionalAuth`, `@Authenticated`,
+///    `@SkipRefresh`, `@AllowRefresh`, or `AuthExtra.options` on plain dio;
+/// 2. the client: `@RestApi(headers: AuthScope.none)` or `AuthScope.dio`;
+/// 3. this interceptor: [defaultMode] and [defaultSkipRefresh].
 class AuthInterceptor extends Interceptor {
   AuthInterceptor({
     required this.dio,
@@ -69,6 +72,7 @@ class AuthInterceptor extends Interceptor {
     this.isSessionInvalid,
     this.proactiveLeeway = const Duration(seconds: 30),
     this.defaultMode = AuthMode.required,
+    this.defaultSkipRefresh = false,
     this.onSessionExpired,
   }) : _refreshDio = refreshDio;
 
@@ -89,8 +93,12 @@ class AuthInterceptor extends Interceptor {
   /// `null` refreshes only after a 401.
   final Duration? proactiveLeeway;
 
-  /// Mode for requests that carry no auth annotation.
+  /// Mode when neither the method nor the client sets one.
   final AuthMode defaultMode;
+
+  /// Whether a 401 skips refreshing when neither the method nor the client
+  /// says.
+  final bool defaultSkipRefresh;
 
   /// Called once each time the session ends, after storage is cleared.
   final FutureOr<void> Function()? onSessionExpired;
@@ -103,8 +111,16 @@ class AuthInterceptor extends Interceptor {
   /// The client passed to [refresh]: [dio]'s options and adapter, without
   /// its interceptors.
   late final Dio refreshDio = _refreshDio ??
-      (Dio(dio.options.copyWith(headers: Map.of(dio.options.headers)))
-        ..httpClientAdapter = dio.httpClientAdapter);
+      (Dio(
+        dio.options.copyWith(
+          headers: Map.of(dio.options.headers)
+            ..removeWhere(
+              (key, _) =>
+                  key.toLowerCase() == AuthScope.modeHeader ||
+                  key.toLowerCase() == AuthScope.skipRefreshHeader,
+            ),
+        ),
+      )..httpClientAdapter = dio.httpClientAdapter);
 
   Stream<AuthEvent> get events => _events.stream;
 
@@ -115,13 +131,14 @@ class AuthInterceptor extends Interceptor {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
+    AuthScope.absorb(options);
     final mode = _modeOf(options);
     if (mode == AuthMode.none) return handler.next(options);
 
     var tokens = await _currentTokens();
     if (tokens != null &&
         mode == AuthMode.required &&
-        !AuthExtra.skipsRefresh(options) &&
+        !_skipsRefresh(options) &&
         _expiresSoon(tokens)) {
       try {
         tokens = await _refresh(tokens);
@@ -165,7 +182,7 @@ class AuthInterceptor extends Interceptor {
     }
 
     if (!shouldRefresh(err) ||
-        AuthExtra.skipsRefresh(options) ||
+        _skipsRefresh(options) ||
         options.extra[AuthExtra.retried] == true) {
       return handler.next(err);
     }
@@ -196,6 +213,9 @@ class AuthInterceptor extends Interceptor {
 
   AuthMode _modeOf(RequestOptions options) =>
       AuthExtra.modeOf(options) ?? defaultMode;
+
+  bool _skipsRefresh(RequestOptions options) =>
+      AuthExtra.skipsRefresh(options, fallback: defaultSkipRefresh);
 
   bool _expiresSoon(TokenPair tokens) {
     final leeway = proactiveLeeway;

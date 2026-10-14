@@ -14,8 +14,17 @@ enum AuthMode {
 
 /// `RequestOptions.extra` keys read by `AuthInterceptor`.
 abstract final class AuthExtra {
+  /// Method-level mode, written by the annotations.
   static const mode = 'dio_auth_kit.mode';
+
+  /// Method-level refresh switch, written by `@SkipRefresh`/`@AllowRefresh`.
   static const skipRefresh = 'dio_auth_kit.skipRefresh';
+
+  /// Client-level mode, absorbed from the `AuthScope` marker header.
+  static const scopeMode = 'dio_auth_kit.scopeMode';
+
+  /// Client-level refresh switch, absorbed from the `AuthScope` marker header.
+  static const scopeSkipRefresh = 'dio_auth_kit.scopeSkipRefresh';
 
   /// Set on a retried request so a second 401 does not refresh again.
   static const retried = 'dio_auth_kit.retried';
@@ -23,29 +32,33 @@ abstract final class AuthExtra {
   /// The access token the request was sent with.
   static const sentToken = 'dio_auth_kit.sentToken';
 
-  /// The [AuthMode] stored in [options], or `null` when unset.
-  static AuthMode? modeOf(RequestOptions options) {
-    final value = options.extra[mode];
-    return value is String ? AuthMode.values.asNameMap()[value] : null;
+  /// The method-level [AuthMode], else the client-level one, else `null`.
+  static AuthMode? modeOf(RequestOptions options) =>
+      _mode(options.extra[mode]) ?? _mode(options.extra[scopeMode]);
+
+  /// Whether a 401 skips refreshing: the method-level setting, else the
+  /// client-level one, else [fallback].
+  static bool skipsRefresh(RequestOptions options, {bool fallback = false}) {
+    final method = options.extra[skipRefresh];
+    if (method is bool) return method;
+    final scope = options.extra[scopeSkipRefresh];
+    if (scope is bool) return scope;
+    return fallback;
   }
 
-  static bool skipsRefresh(RequestOptions options) =>
-      options.extra[skipRefresh] == true;
+  static AuthMode? _mode(Object? value) =>
+      value is String ? AuthMode.values.asNameMap()[value] : null;
 
   /// The extras for plain dio calls, the counterpart of the annotations.
   ///
   /// ```dart
   /// dio.post('/auth/login', options: AuthExtra.options(mode: AuthMode.none));
   /// ```
-  static Options options({AuthMode? mode, bool skipRefresh = false}) =>
+  static Options options({AuthMode? mode, bool? skipRefresh}) =>
       Options(extra: extras(mode: mode, skipRefresh: skipRefresh));
 
-  static Map<String, Object> extras({
-    AuthMode? mode,
-    bool skipRefresh = false,
-  }) =>
-      {
+  static Map<String, Object> extras({AuthMode? mode, bool? skipRefresh}) => {
         if (mode != null) AuthExtra.mode: mode.name,
-        if (skipRefresh) AuthExtra.skipRefresh: true,
+        if (skipRefresh != null) AuthExtra.skipRefresh: skipRefresh,
       };
 }
