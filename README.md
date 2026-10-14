@@ -301,3 +301,8 @@ dart pub get
 dart run build_runner build -d
 dart test
 ```
+
+## License
+
+[MIT](LICENSE): free to use, modify and distribute, including in commercial
+apps, as long as the copyright notice is kept.
