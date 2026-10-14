@@ -3,6 +3,9 @@ description: >-
   Bearer and JWT authentication for dio and retrofit: header injection,
   single-flight token refresh with retry, and per-endpoint auth annotations.
 version: 0.1.0
+repository: https://github.com/salahaldeenalmamary/dio_auth_kit
+issue_tracker: https://github.com/salahaldeenalmamary/dio_auth_kit/issues
+topics: [dio, retrofit, jwt, authentication, http]
 
 environment:
   sdk: ^3.5.0
